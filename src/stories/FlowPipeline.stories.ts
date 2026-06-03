@@ -7,7 +7,7 @@ import type {
   Path,
   ParticleConfig,
   TrackConfig
-} from '../components/FlowPipeline/types'
+} from '../components/FlowPipelineCore/types'
 
 const baseTrack: TrackConfig = {
   width: 2,

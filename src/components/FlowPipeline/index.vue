@@ -14,9 +14,8 @@
 </template>
 
 <script setup lang="ts">
+import { gsap } from 'gsap'
 import { onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
-import ParticleGroup from './Particle'
-import PathGeometry from './PathGeometry'
 import {
   getParticleGradientStops,
   getTrailLayerConfigs
@@ -26,17 +25,26 @@ import {
   createDefaultEndpointConfig,
   createDefaultParticleConfig,
   createDefaultTrackConfig
-} from './defaults'
+} from '../FlowPipelineCore/defaults'
+import {
+  advanceParticleStates,
+  buildFlowPipelineScene,
+  createParticleStates,
+  createRenderableParticles,
+  getNodeRenderRadius,
+  type FlowPipelineScene,
+  type ParticleSlice,
+  type ParticleState,
+  type PathItem
+} from '../FlowPipelineCore/flowPipelineModel'
 import type {
   CapConfig,
   EndpointConfig,
   NodeConfig,
-  NodeRenderItem,
   Path,
   ParticleConfig,
-  Slice,
   TrackConfig
-} from './types'
+} from '../FlowPipelineCore/types'
 
 defineOptions({ name: 'FlowPipeline' })
 
@@ -72,12 +80,11 @@ const canvasRef = useTemplateRef<HTMLCanvasElement>('canvasRef')
 let ctx: CanvasRenderingContext2D | null = null
 let bufferCanvas: HTMLCanvasElement | null = null
 let bufferCtx: CanvasRenderingContext2D | null = null
-let animationFrameId = 0
-let lastFrameTime = 0
+let tickerActive = false
+let frameTime = 0
 let dpr = 1
-let geometryList: PathGeometry[] = []
-let particleGroups: ParticleGroup[] = []
-let nodeRenderList: NodeRenderItem[] = []
+let scene: FlowPipelineScene = buildFlowPipelineScene({})
+let particleStates: ParticleState[][] = []
 
 function handleConfigChange() {
   stopAnimation()
@@ -109,43 +116,21 @@ function setupCanvas() {
 }
 
 function buildScene() {
-  geometryList = props.paths
-    .map((path) => new PathGeometry(path))
-    .filter((geometry) => geometry.getTotalLength() > 0)
+  scene = buildFlowPipelineScene({
+    paths: props.paths,
+    nodes: props.nodes,
+    particle: props.particle,
+    track: props.track,
+    cap: props.cap,
+    endpoint: props.endpoint,
+    frameTime
+  })
 
-  particleGroups = geometryList.map(
-    (geometry) =>
-      new ParticleGroup({
-        geometry,
-        ...createDefaultParticleConfig(),
-        ...props.particle
-      })
+  particleStates = scene.pathItems.map((item) =>
+    createParticleStates(scene.particle, item.totalLength)
   )
 
-  nodeRenderList = props.nodes
-    .map((node) => buildNode(node))
-    .filter((node): node is NodeRenderItem => node !== null)
-
   renderTrackToBuffer()
-  lastFrameTime = 0
-}
-
-function buildNode(node: NodeConfig): NodeRenderItem | null {
-  const geometry = geometryList[node.pathIndex]
-
-  if (!geometry) {
-    return null
-  }
-
-  const position = clamp(Number(node.position) || 0, 0, 1)
-  const absoluteLength = geometry.getTotalLength() * position
-
-  return {
-    ...node,
-    radius: Math.max(1, Number(node.radius) || 4),
-    absoluteLength,
-    point: geometry.getPointAtLength(absoluteLength)
-  }
 }
 
 function renderTrackToBuffer() {
@@ -154,36 +139,42 @@ function renderTrackToBuffer() {
   }
 
   bufferCtx.clearRect(0, 0, props.width, props.height)
-  geometryList.forEach((geometry) => {
-    drawTrackPath(bufferCtx as CanvasRenderingContext2D, geometry)
-    drawTrackCaps(bufferCtx as CanvasRenderingContext2D, geometry)
+  scene.pathItems.forEach((item) => {
+    drawTrackPath(bufferCtx as CanvasRenderingContext2D, item)
+    drawTrackCaps(bufferCtx as CanvasRenderingContext2D, item)
   })
 }
 
 function startAnimation() {
-  animationFrameId = requestAnimationFrame(tick)
-}
-
-function stopAnimation() {
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = 0
+  if (!tickerActive) {
+    gsap.ticker.add(tick)
+    tickerActive = true
   }
 }
 
-function tick(timestamp: number) {
-  const deltaSeconds = lastFrameTime
-    ? (timestamp - lastFrameTime) / 1000
-    : 0
+function stopAnimation() {
+  if (tickerActive) {
+    gsap.ticker.remove(tick)
+    tickerActive = false
+  }
+}
 
-  lastFrameTime = timestamp
+function tick(time: number, deltaTime: number) {
+  const deltaSeconds = Math.max(0, (Number(deltaTime) || 0) / 1000)
+  frameTime = time * 1000
   update(deltaSeconds)
   draw()
-  animationFrameId = requestAnimationFrame(tick)
 }
 
 function update(deltaSeconds: number) {
-  particleGroups.forEach((group) => group.update(deltaSeconds))
+  particleStates = scene.pathItems.map((item, pathIdx) =>
+    advanceParticleStates(
+      particleStates[pathIdx] ?? [],
+      deltaSeconds,
+      scene.particle.speed ?? 120,
+      item.totalLength
+    )
+  )
 }
 
 function draw() {
@@ -207,42 +198,39 @@ function drawTrack() {
 
 function drawTrackPath(
   targetCtx: CanvasRenderingContext2D,
-  geometry: PathGeometry
+  item: PathItem
 ) {
-  const trackConfig = { ...createDefaultTrackConfig(), ...props.track }
-
   targetCtx.save()
   targetCtx.lineCap = 'round'
   targetCtx.lineJoin = 'round'
 
-  drawLineGlow(targetCtx, geometry, trackConfig)
+  drawLineGlow(targetCtx, item)
   targetCtx.restore()
 }
 
 function drawLineGlow(
   targetCtx: CanvasRenderingContext2D,
-  geometry: PathGeometry,
-  trackConfig: TrackConfig
+  item: PathItem
 ) {
   const layers = [
     {
-      width: trackConfig.outerGlowWidth,
-      color: trackConfig.outerGlowColor,
+      width: scene.track.outerGlowWidth,
+      color: scene.track.outerGlowColor,
       blur: 0
     },
     {
-      width: trackConfig.glowWidth,
-      color: trackConfig.glowColor,
+      width: scene.track.glowWidth,
+      color: scene.track.glowColor,
       blur: 5
     },
     {
-      width: trackConfig.width,
-      color: trackConfig.color,
+      width: scene.track.width,
+      color: scene.track.color,
       blur: 0
     },
     {
-      width: trackConfig.coreWidth,
-      color: trackConfig.coreColor,
+      width: scene.track.coreWidth,
+      color: scene.track.coreColor,
       blur: 0
     }
   ]
@@ -257,21 +245,21 @@ function drawLineGlow(
     targetCtx.lineWidth = layer.width
     targetCtx.shadowColor = layer.color ?? 'transparent'
     targetCtx.shadowBlur = layer.blur
-    strokeGeometry(targetCtx, geometry)
+    strokePathItem(targetCtx, item)
     targetCtx.restore()
   })
 }
 
-function strokeGeometry(
+function strokePathItem(
   targetCtx: CanvasRenderingContext2D,
-  geometry: PathGeometry
+  item: PathItem
 ) {
-  if (!geometry.points.length) {
+  if (!item.points.length) {
     return
   }
 
   targetCtx.beginPath()
-  geometry.points.forEach((point, index) => {
+  item.points.forEach((point, index) => {
     if (index === 0) {
       targetCtx.moveTo(point[0], point[1])
     } else {
@@ -283,59 +271,38 @@ function strokeGeometry(
 
 function drawTrackCaps(
   targetCtx: CanvasRenderingContext2D,
-  geometry: PathGeometry
+  item: PathItem
 ) {
-  const endpointConfig = {
-    ...createDefaultEndpointConfig(),
-    ...props.cap,
-    ...props.endpoint
-  }
-  const capConfig = { ...createDefaultCapConfig(), ...endpointConfig }
-
   if (
-    !endpointConfig.show ||
-    !capConfig.drawPathEnds ||
-    !geometry.points.length
+    !scene.endpoint.show ||
+    !scene.cap.drawPathEnds ||
+    !item.endpoints.length
   ) {
     return
   }
 
-  const firstPoint = geometry.points[0]
-  const lastPoint = geometry.points[geometry.points.length - 1]
-  drawTrackCap(
-    targetCtx,
-    { x: firstPoint[0], y: firstPoint[1] },
-    endpointConfig
-  )
-
-  if (firstPoint[0] !== lastPoint[0] || firstPoint[1] !== lastPoint[1]) {
-    drawTrackCap(
-      targetCtx,
-      { x: lastPoint[0], y: lastPoint[1] },
-      endpointConfig
-    )
-  }
+  item.endpoints.forEach((point) => drawTrackCap(targetCtx, point))
 }
 
 function drawTrackCap(
   targetCtx: CanvasRenderingContext2D,
-  point: { x: number; y: number },
-  capConfig: EndpointConfig
+  point: { x: number; y: number }
 ) {
-  const radius = Math.max(1, Number(capConfig.radius) || 3)
-  const ringRadius = Math.max(radius, Number(capConfig.ringRadius) || 0)
+  const radius = Math.max(1, Number(scene.endpoint.radius) || 3)
+  const ringRadius = Math.max(radius, Number(scene.endpoint.ringRadius) || 0)
 
   targetCtx.save()
-  targetCtx.fillStyle = capConfig.activeColor || capConfig.color || '#ffffff'
-  targetCtx.shadowColor = capConfig.glowColor ?? 'transparent'
-  targetCtx.shadowBlur = Math.max(0, Number(capConfig.glowBlur) || 0)
+  targetCtx.fillStyle =
+    scene.endpoint.activeColor || scene.endpoint.color || '#ffffff'
+  targetCtx.shadowColor = scene.endpoint.glowColor ?? 'transparent'
+  targetCtx.shadowBlur = Math.max(0, Number(scene.endpoint.glowBlur) || 0)
   targetCtx.beginPath()
   targetCtx.arc(point.x, point.y, radius, 0, Math.PI * 2)
   targetCtx.fill()
 
   if (ringRadius > radius) {
     targetCtx.shadowBlur = 0
-    targetCtx.strokeStyle = capConfig.ringColor ?? 'transparent'
+    targetCtx.strokeStyle = scene.endpoint.ringColor ?? 'transparent'
     targetCtx.lineWidth = 1
     targetCtx.beginPath()
     targetCtx.arc(point.x, point.y, ringRadius, 0, Math.PI * 2)
@@ -349,26 +316,28 @@ function drawNodes() {
     return
   }
 
-  const now = performance.now()
+  scene.pathItems.forEach((item) => {
+    item.nodes.forEach((node) => {
+      const radius = getNodeRenderRadius(
+        node.radius,
+        Boolean(node.pulse),
+        frameTime,
+        node.absoluteLength
+      )
+      const color = node.color || '#6fffe9'
+      const glowColor = node.glowColor || '#00d8ff'
+      const glowBlur = Math.max(0, Number(node.glowBlur) || 12)
+      const target = ctx as CanvasRenderingContext2D
 
-  nodeRenderList.forEach((node) => {
-    const pulseScale = node.pulse
-      ? 1 + Math.sin(now / 400 + node.absoluteLength / 30) * 0.12
-      : 1
-    const radius = Math.max(1, node.radius * pulseScale)
-    const color = node.color || '#6fffe9'
-    const glowColor = node.glowColor || '#00d8ff'
-    const glowBlur = Math.max(0, Number(node.glowBlur) || 12)
-    const target = ctx as CanvasRenderingContext2D
-
-    target.save()
-    target.fillStyle = color
-    target.shadowColor = glowColor
-    target.shadowBlur = glowBlur
-    target.beginPath()
-    target.arc(node.point.x, node.point.y, radius, 0, Math.PI * 2)
-    target.fill()
-    target.restore()
+      target.save()
+      target.fillStyle = color
+      target.shadowColor = glowColor
+      target.shadowBlur = glowBlur
+      target.beginPath()
+      target.arc(node.x, node.y, radius, 0, Math.PI * 2)
+      target.fill()
+      target.restore()
+    })
   })
 }
 
@@ -377,14 +346,17 @@ function drawParticles() {
     return
   }
 
-  const particleConfig = { ...createDefaultParticleConfig(), ...props.particle }
-  const trailLayers = getTrailLayerConfigs(particleConfig)
+  const trailLayers = getTrailLayerConfigs(scene.particle)
 
-  particleGroups.forEach((group) => {
-    group.getRenderableParticles().forEach((particle) => {
+  scene.pathItems.forEach((item, pathIdx) => {
+    createRenderableParticles(
+      item.segments,
+      particleStates[pathIdx] ?? [],
+      scene.particle
+    ).forEach((particle) => {
       particle.slices.forEach((slice) => {
         trailLayers.forEach((layer) => {
-          drawMeteorTrail(slice, particleConfig, layer.width, layer.opacity)
+          drawMeteorTrail(slice, scene.particle, layer.width, layer.opacity)
         })
       })
     })
@@ -392,7 +364,7 @@ function drawParticles() {
 }
 
 function drawMeteorTrail(
-  slice: Slice,
+  slice: ParticleSlice,
   particleConfig: ParticleConfig,
   lineWidth: number,
   layerOpacity: number
@@ -423,7 +395,7 @@ function drawMeteorTrail(
 
 function createTrailGradient(
   targetCtx: CanvasRenderingContext2D,
-  slice: Slice,
+  slice: ParticleSlice,
   particleConfig: ParticleConfig
 ) {
   const gradient = targetCtx.createLinearGradient(

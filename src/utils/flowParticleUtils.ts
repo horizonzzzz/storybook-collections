@@ -1,4 +1,4 @@
-import type { ParticleConfig } from '../components/FlowPipeline/types'
+import type { ParticleConfig } from '../components/FlowPipelineCore/types'
 
 export interface GradientStop {
   offset: number

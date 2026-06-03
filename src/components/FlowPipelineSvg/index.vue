@@ -149,12 +149,12 @@
           <circle
             :cx="item.endpoints[0].x"
             :cy="item.endpoints[0].y"
-            :r="mergedCap.radius"
+            :r="mergedEndpoint.radius"
             :fill="mergedEndpoint.activeColor"
             :filter="`url(#${filterIds.endpointGlow})`"
           />
           <circle
-            v-if="mergedEndpoint.ringRadius! > mergedCap.radius!"
+            v-if="mergedEndpoint.ringRadius! > mergedEndpoint.radius!"
             :cx="item.endpoints[0].x"
             :cy="item.endpoints[0].y"
             :r="mergedEndpoint.ringRadius"
@@ -166,12 +166,12 @@
             <circle
               :cx="item.endpoints[1].x"
               :cy="item.endpoints[1].y"
-              :r="mergedCap.radius"
+              :r="mergedEndpoint.radius"
               :fill="mergedEndpoint.activeColor"
               :filter="`url(#${filterIds.endpointGlow})`"
             />
             <circle
-              v-if="mergedEndpoint.ringRadius! > mergedCap.radius!"
+              v-if="mergedEndpoint.ringRadius! > mergedEndpoint.radius!"
               :cx="item.endpoints[1].x"
               :cy="item.endpoints[1].y"
               :r="mergedEndpoint.ringRadius"
@@ -217,9 +217,9 @@
 </template>
 
 <script setup lang="ts">
+import { gsap } from 'gsap'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { CapConfig, EndpointConfig, NodeConfig, ParticleConfig, Path, TrackConfig } from './types'
-import { pathToSvgD } from './utils'
+import type { CapConfig, EndpointConfig, NodeConfig, ParticleConfig, Path, TrackConfig } from '../FlowPipelineCore/types'
 import {
   getParticleGradientStops,
   getTrailLayerConfigs,
@@ -227,21 +227,18 @@ import {
 } from '../../utils/flowParticleUtils'
 import {
   advanceParticleStates,
-  buildSegments,
+  buildFlowPipelineScene,
   createParticleStates,
   createRenderableParticles,
-  getPointAtLength,
-  getTotalLength,
   type ParticleState,
-  type RenderableParticle,
-  type Segment
-} from './particleMath'
+  type RenderableParticle
+} from '../FlowPipelineCore/flowPipelineModel'
 import {
   createDefaultCapConfig,
   createDefaultEndpointConfig,
   createDefaultParticleConfig,
   createDefaultTrackConfig
-} from '../FlowPipeline/defaults'
+} from '../FlowPipelineCore/defaults'
 
 defineOptions({ name: 'FlowPipelineSvg' })
 
@@ -249,8 +246,7 @@ let uidCounter = 0
 const uid = `fpsvg-${++uidCounter}`
 const frameNow = ref(0)
 const particleStates = ref<ParticleState[][]>([])
-let animationFrameId = 0
-let lastFrameTime = 0
+let tickerActive = false
 
 const props = withDefaults(
   defineProps<{
@@ -275,23 +271,21 @@ const props = withDefaults(
   }
 )
 
-const mergedParticle = computed(() => ({
-  ...createDefaultParticleConfig(),
-  ...props.particle
-}))
-const mergedTrack = computed(() => ({
-  ...createDefaultTrackConfig(),
-  ...props.track
-}))
-const mergedCap = computed(() => ({
-  ...createDefaultCapConfig(),
-  ...props.cap
-}))
-const mergedEndpoint = computed(() => ({
-  ...createDefaultEndpointConfig(),
-  ...props.cap,
-  ...props.endpoint
-}))
+const scene = computed(() =>
+  buildFlowPipelineScene({
+    paths: props.paths,
+    nodes: props.nodes,
+    particle: props.particle,
+    track: props.track,
+    cap: props.cap,
+    endpoint: props.endpoint,
+    frameTime: frameNow.value
+  })
+)
+const mergedParticle = computed(() => scene.value.particle)
+const mergedTrack = computed(() => scene.value.track)
+const mergedCap = computed(() => scene.value.cap)
+const mergedEndpoint = computed(() => scene.value.endpoint)
 
 const filterIds = {
   trackGlow: `${uid}-trk-glow`,
@@ -303,78 +297,7 @@ function nodeFilterId(pathIdx: number, nodeIdx: number) {
   return `${uid}-node-${pathIdx}-${nodeIdx}`
 }
 
-interface PathItem {
-  d: string
-  segments: Segment[]
-  totalLength: number
-  endpoints: Array<{ x: number; y: number }>
-  nodes: Array<{
-    x: number
-    y: number
-    radius: number
-    renderRadius: number
-    absoluteLength: number
-    color?: string
-    glowColor?: string
-    glowBlur?: number
-    pulse?: boolean
-  }>
-}
-
-const pathItems = computed(() => {
-  const items: PathItem[] = []
-
-  props.paths.forEach((path, pathIdx) => {
-    const d = pathToSvgD(path)
-    const segments = buildSegments(path)
-    const totalLength = getTotalLength(segments)
-
-    if (!d || !segments.length || !totalLength) {
-      return
-    }
-
-    const firstPoint = path.points[0]
-    const lastPoint = path.points[path.points.length - 1]
-    const endpoints = [{ x: firstPoint[0], y: firstPoint[1] }]
-
-    if (firstPoint[0] !== lastPoint[0] || firstPoint[1] !== lastPoint[1]) {
-      endpoints.push({ x: lastPoint[0], y: lastPoint[1] })
-    }
-
-    const nodes: PathItem['nodes'] = (props.nodes ?? [])
-      .filter((node) => node.pathIndex === pathIdx)
-      .map((node) => {
-        const position = Math.min(Math.max(Number(node.position) || 0, 0), 1)
-        const absoluteLength = totalLength * position
-        const point = getPointAtLength(segments, absoluteLength)
-        const phase = node.pulse
-          ? Math.sin(frameNow.value / 400 + absoluteLength / 30) * 0.12
-          : 0
-
-        return {
-          x: point.x,
-          y: point.y,
-          radius: Math.max(1, Number(node.radius) || 4),
-          renderRadius: Math.max(1, (Number(node.radius) || 4) * (1 + phase)),
-          absoluteLength,
-          color: node.color,
-          glowColor: node.glowColor,
-          glowBlur: node.glowBlur,
-          pulse: node.pulse
-        }
-      })
-
-    items.push({
-      d,
-      segments,
-      totalLength,
-      endpoints,
-      nodes
-    })
-  })
-
-  return items
-})
+const pathItems = computed(() => scene.value.pathItems)
 
 const renderableParticles = computed<RenderableParticle[][]>(() =>
   pathItems.value.map((item, pathIdx) =>
@@ -448,13 +371,11 @@ function rebuildParticleStates() {
   particleStates.value = pathItems.value.map((item) =>
     createParticleStates(mergedParticle.value, item.totalLength)
   )
-  lastFrameTime = 0
 }
 
-function tick(timestamp: number) {
-  const deltaSeconds = lastFrameTime ? (timestamp - lastFrameTime) / 1000 : 0
-  lastFrameTime = timestamp
-  frameNow.value = timestamp
+function tick(time: number, deltaTime: number) {
+  const deltaSeconds = Math.max(0, (Number(deltaTime) || 0) / 1000)
+  frameNow.value = time * 1000
 
   particleStates.value = pathItems.value.map((item, pathIdx) =>
     advanceParticleStates(
@@ -464,19 +385,19 @@ function tick(timestamp: number) {
       item.totalLength
     )
   )
-
-  animationFrameId = requestAnimationFrame(tick)
 }
 
 function startAnimation() {
-  stopAnimation()
-  animationFrameId = requestAnimationFrame(tick)
+  if (!tickerActive) {
+    gsap.ticker.add(tick)
+    tickerActive = true
+  }
 }
 
 function stopAnimation() {
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId)
-    animationFrameId = 0
+  if (tickerActive) {
+    gsap.ticker.remove(tick)
+    tickerActive = false
   }
 }
 

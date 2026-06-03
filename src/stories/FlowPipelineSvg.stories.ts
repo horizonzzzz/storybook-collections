@@ -7,7 +7,7 @@ import type {
   Path,
   ParticleConfig,
   TrackConfig
-} from '../components/FlowPipelineSvg/types'
+} from '../components/FlowPipelineCore/types'
 
 const baseTrack: TrackConfig = {
   width: 2,
@@ -180,7 +180,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'SVG + GSAP 实现的流光管道动效组件。与 Canvas 版 FlowPipeline 接口完全一致，用 `stroke-dasharray` + GSAP `strokeDashoffset` 动画替代手动 Canvas 渲染，SVG `<filter>` 替代 `shadowBlur`。'
+          'SVG renderer for the shared FlowPipeline model. It keeps the Canvas component API, uses SVG paths/filters/gradients for rendering, and advances animation through GSAP ticker.'
       }
     }
   },
