@@ -120,7 +120,11 @@ function handleBlur() {
   }
 }
 
-function handleCommaSeparator(event: KeyboardEvent) {
+function handleCommaSeparator(event: Event | KeyboardEvent) {
+  if (!(event instanceof KeyboardEvent)) {
+    return
+  }
+
   if (props.separator !== 'comma' || event.key !== ',') {
     return
   }
@@ -129,7 +133,11 @@ function handleCommaSeparator(event: KeyboardEvent) {
   commitDraft()
 }
 
-function handleSpaceSeparator(event: KeyboardEvent) {
+function handleSpaceSeparator(event: Event | KeyboardEvent) {
+  if (!(event instanceof KeyboardEvent)) {
+    return
+  }
+
   if (props.separator !== 'space') {
     return
   }

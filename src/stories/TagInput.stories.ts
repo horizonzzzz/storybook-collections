@@ -13,6 +13,9 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Basic: Story = {
+  args: {
+    modelValue: []
+  },
   render: () => ({
     components: { TagInput },
     setup() {
